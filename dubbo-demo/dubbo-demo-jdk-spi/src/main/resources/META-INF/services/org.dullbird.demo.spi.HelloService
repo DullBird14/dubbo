@@ -1,0 +1,2 @@
+org.dullbird.demo.spi.ChineseSayServiceImpl
+org.dullbird.demo.spi.EnglishSayServiceImpl
