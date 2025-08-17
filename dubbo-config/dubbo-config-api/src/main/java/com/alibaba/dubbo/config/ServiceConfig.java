@@ -265,6 +265,12 @@ public class ServiceConfig<T> extends AbstractServiceConfig {
                 monitor = application.getMonitor();
             }
         }
+        // [Gemini 备注] GenericService 是Dubbo的泛化调用实现，允许在没有服务接口API的情况下调用服务。
+        // 因此，这里的逻辑是一个特殊处理：
+        // 1. 如果 ref 是 GenericService 的实例，那么就将 interfaceClass 直接设置为 GenericService.class。
+        // 2. 不再进行常规的 `ref instanceof interfaceClass` 检查，因为这里的 ref 就是一个“万能”的调用处理器，
+        //    而不是某个具体业务接口（如 GreetingService）的实现。
+        // 3. 这对于实现API网关、测试平台等场景至关重要。
         if (ref instanceof GenericService) {
             interfaceClass = GenericService.class;
             if (StringUtils.isEmpty(generic)) {
@@ -473,6 +479,7 @@ public class ServiceConfig<T> extends AbstractServiceConfig {
                 map.put(Constants.METHODS_KEY, StringUtils.join(new HashSet<String>(Arrays.asList(methods)), ","));
             }
         }
+        //用来服务提供者和消费者，密钥的逻辑
         if (!ConfigUtils.isEmpty(token)) {
             if (ConfigUtils.isDefault(token)) {
                 map.put(Constants.TOKEN_KEY, UUID.randomUUID().toString());
@@ -549,10 +556,11 @@ public class ServiceConfig<T> extends AbstractServiceConfig {
                         exporters.add(exporter);
                     }
                 } else {
+                    // 这里主要是利用 proxyFactory 把 业务千奇百怪的 ref 全部转换成统一的 Invoker接口。
                     Invoker<?> invoker = proxyFactory.getInvoker(ref, (Class) interfaceClass, url);
                     DelegateProviderMetaDataInvoker wrapperInvoker = new DelegateProviderMetaDataInvoker(invoker, this);
 
-                    Exporter<?> exporter = protocol.export(wrapperInvoker);
+                    Exporter<?> exporter = protxian ocol.export(wrapperInvoker);
                     exporters.add(exporter);
                 }
             }
@@ -594,26 +602,38 @@ public class ServiceConfig<T> extends AbstractServiceConfig {
      * @return
      */
     private String findConfigedHosts(ProtocolConfig protocolConfig, List<URL> registryURLs, Map<String, String> map) {
+        // [Gemini 备注] 这个方法的核心目标是确定两个关键IP：
+        // 1. hostToBind: 服务端真实监听（bind）的IP地址。
+        // 2. hostToRegistry: 注册到注册中心，并希望消费者来访问的IP地址。
+        // 这两者在复杂网络环境（如Docker、NAT）下可能不同。
+
         boolean anyhost = false;
 
+        // [Gemini 备注] === 第一步：确定服务绑定的IP (hostToBind) ===
+        // [Gemini 备注] 优先级1：从Java System Property或环境变量获取，这是最高优先级，用于运维强制指定。
+        // [Gemini 备注] 例如，通过 -DDUBBO_IP_TO_BIND=192.168.1.100 来指定。
         String hostToBind = getValueFromConfig(protocolConfig, Constants.DUBBO_IP_TO_BIND);
         if (hostToBind != null && hostToBind.length() > 0 && isInvalidLocalHost(hostToBind)) {
             throw new IllegalArgumentException("Specified invalid bind ip from property:" + Constants.DUBBO_IP_TO_BIND + ", value:" + hostToBind);
         }
 
-        // if bind ip is not found in environment, keep looking up
+        // [Gemini 备注] 优先级2：如果环境变量没有，则从XML配置中获取 (<dubbo:protocol host="..."> 或 <dubbo:provider host="...">)。
         if (hostToBind == null || hostToBind.length() == 0) {
             hostToBind = protocolConfig.getHost();
             if (provider != null && (hostToBind == null || hostToBind.length() == 0)) {
                 hostToBind = provider.getHost();
             }
+            // [Gemini 备注] 优先级3：如果XML也没有配置，则进入自动发现逻辑。
             if (isInvalidLocalHost(hostToBind)) {
                 anyhost = true;
                 try {
+                    // 尝试获取本机IP地址。
                     hostToBind = InetAddress.getLocalHost().getHostAddress();
                 } catch (UnknownHostException e) {
                     logger.warn(e.getMessage(), e);
                 }
+                // [Gemini 备注] 如果获取的本机IP是无效地址（如127.0.0.1），则尝试通过连接注册中心来反向获取本机可用网卡的IP。
+                // [Gemini 备注] 这是一个很巧妙的技巧，能确保获取到的IP是能和注册中心通信的。
                 if (isInvalidLocalHost(hostToBind)) {
                     if (registryURLs != null && !registryURLs.isEmpty()) {
                         for (URL registryURL : registryURLs) {
@@ -639,6 +659,7 @@ public class ServiceConfig<T> extends AbstractServiceConfig {
                             }
                         }
                     }
+                    // [Gemini 备注] 如果以上方法都失败，做最后尝试，遍历所有网卡获取IP。
                     if (isInvalidLocalHost(hostToBind)) {
                         hostToBind = getLocalHost();
                     }
@@ -646,19 +667,24 @@ public class ServiceConfig<T> extends AbstractServiceConfig {
             }
         }
 
+        // [Gemini 备注] 将最终确定的绑定IP存入参数map，key为"bind.ip"。
         map.put(Constants.BIND_IP_KEY, hostToBind);
 
-        // registry ip is not used for bind ip by default
+        // [Gemini 备注] === 第二步：确定服务注册的IP (hostToRegistry) ===
+        // [Gemini 备注] 优先级1：从Java System Property或环境变量获取，用于运维强制指定。
+        // [Gemini 备注] 这个配置是解决Docker等NAT网络问题的关键。容器内服务监听的是内网IP(hostToBind)，但必须把宿主机的IP(hostToRegistry)注册出去。
         String hostToRegistry = getValueFromConfig(protocolConfig, Constants.DUBBO_IP_TO_REGISTRY);
         if (hostToRegistry != null && hostToRegistry.length() > 0 && isInvalidLocalHost(hostToRegistry)) {
             throw new IllegalArgumentException("Specified invalid registry ip from property:" + Constants.DUBBO_IP_TO_REGISTRY + ", value:" + hostToRegistry);
         } else if (hostToRegistry == null || hostToRegistry.length() == 0) {
-            // bind ip is used as registry ip by default
+            // [Gemini 备注] 优先级2：如果未特殊指定注册IP，则默认使用上面确定的绑定IP作为注册IP。
             hostToRegistry = hostToBind;
         }
 
+        // [Gemini 备注] anyhost参数用于告知后续逻辑，IP地址是自动发现的。
         map.put(Constants.ANYHOST_KEY, String.valueOf(anyhost));
 
+        // [Gemini 备注] 方法最终返回要注册到注册中心的IP地址。
         return hostToRegistry;
     }
 

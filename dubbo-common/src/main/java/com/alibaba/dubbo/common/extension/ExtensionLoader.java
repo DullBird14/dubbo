@@ -648,7 +648,8 @@ public class ExtensionLoader<T> {
 
     // synchronized in getExtensionClasses
     private Map<String, Class<?>> loadExtensionClasses() {
-        // 查看当前的 ExtensionLoader 扩展接口的类型，是不是包含 @SPI 注解
+        // 查看当前的 getExtensionLoader(xxx.class) 扩展接口的类型，
+        // xxx.class是不是包含 @SPI 注解
         final SPI defaultAnnotation = type.getAnnotation(SPI.class);
         if (defaultAnnotation != null) {
             // 从注解中获取值
@@ -828,7 +829,8 @@ public class ExtensionLoader<T> {
     }
 
     private Class<?> getAdaptiveExtensionClass() {
-        // 如果是自适应的类，加载资源的时候就缓存了
+        // 如果是SPI的类，加载资源的时候就缓存了,
+        // 这里去SPI查看是不是存在这个类。存在的话。可以
         getExtensionClasses();
         // 如果已经缓存了自适应的类，直接返回
         if (cachedAdaptiveClass != null) {
